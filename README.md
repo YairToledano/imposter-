@@ -2,6 +2,8 @@
 
 [![שחקו עכשיו](https://img.shields.io/badge/▶_שחקו_עכשיו-2ea44f?style=for-the-badge)](https://yairtoledano.github.io/imposter-/)
 
+חדש: גילוי מי היה האימפוסטר בסוף כל סבב
+
 Offline, pass-the-phone party game. One shared phone, no accounts, no backend,
 no build step — plain HTML/CSS/JS.
 

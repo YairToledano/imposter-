@@ -278,6 +278,8 @@
       renderSetup();
     } else if (roundState.phase === "reveal") {
       renderReveal();
+    } else if (roundState.phase === "impostor-reveal") {
+      renderImpostorReveal();
     } else {
       renderAnnounce();
     }
@@ -660,6 +662,7 @@
       '<div class="stack">' +
       '<button class="btn btn-primary btn-block" id="new-round-btn">סבב חדש</button>' +
       '<button class="btn btn-ghost btn-block" id="home-btn">חזרה למסך הבית</button>' +
+      '<button class="btn btn-link btn-block" id="reveal-impostors-btn">גילוי אימפוסטרים</button>' +
       "</div>" +
       "</div>";
 
@@ -667,6 +670,43 @@
       beginRound();
     });
     el("home-btn").addEventListener("click", function () {
+      returnHome();
+    });
+    el("reveal-impostors-btn").addEventListener("click", function () {
+      roundState.phase = "impostor-reveal";
+      saveRoundState();
+      render();
+    });
+  }
+
+  // ----- Impostor reveal screen -----
+  function renderImpostorReveal() {
+    const namedPlayers = computeDisplayNames(players);
+    const impostors = roundState.impostorIds
+      .map((id) => namedPlayers.find((p) => p.id === id))
+      .filter(Boolean);
+    const isPlural = impostors.length >= 2;
+    const title = isPlural ? "האימפוסטרים היו:" : "האימפוסטר היה:";
+
+    const namesHtml = impostors
+      .map((p) => '<div class="impostor-reveal-name">' + escapeHtml(p.displayName) + "</div>")
+      .join("");
+
+    app.innerHTML =
+      '<div class="screen screen-center">' +
+      "<h2>" + title + "</h2>" +
+      '<div class="impostor-reveal-names">' + namesHtml + "</div>" +
+      '<p class="impostor-reveal-word">המילה הייתה: <strong>' + escapeHtml(roundState.word) + "</strong></p>" +
+      '<div class="stack">' +
+      '<button class="btn btn-primary btn-block" id="new-round-btn-2">סבב חדש</button>' +
+      '<button class="btn btn-ghost btn-block" id="home-btn-2">חזרה למסך הבית</button>' +
+      "</div>" +
+      "</div>";
+
+    el("new-round-btn-2").addEventListener("click", function () {
+      beginRound();
+    });
+    el("home-btn-2").addEventListener("click", function () {
       returnHome();
     });
   }

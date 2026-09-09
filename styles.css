@@ -138,6 +138,14 @@ h2 {
   border: 1px solid var(--border);
 }
 
+.btn-link {
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: 14px;
+  min-height: 48px;
+}
+
 .btn-block {
   width: 100%;
 }
@@ -525,6 +533,29 @@ h2 {
   font-weight: 800;
   color: var(--accent);
   margin: 12px 0 32px;
+}
+
+.impostor-reveal-names {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 20px;
+}
+
+.impostor-reveal-name {
+  font-size: 30px;
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.impostor-reveal-word {
+  color: var(--text-dim);
+  font-size: 16px;
+  margin: 0 0 32px;
+}
+
+.impostor-reveal-word strong {
+  color: var(--text);
 }
 
 .stack {
