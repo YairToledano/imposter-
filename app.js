@@ -10,7 +10,18 @@
   const SAME_TROLL_TYPE_REPEAT_WEIGHT = 0.3;
   const TARGET_IS_IMPOSTOR_PROBABILITY = 0.85;
 
-  const TROLL_TYPES = ["everyoneImpostor", "differentWords", "nameWord"];
+  const TROLL_TYPE_BASE_WEIGHT = {
+    targetWord: 5,    // sub-type C — highest priority
+    allImpostors: 3,  // sub-type A — second
+    allDifferent: 1   // sub-type B — lowest priority
+  };
+
+  const TROLL_TYPES = ["nameWord", "everyoneImpostor", "differentWords"];
+  const TROLL_TYPE_WEIGHT_KEY = {
+    nameWord: "targetWord",
+    everyoneImpostor: "allImpostors",
+    differentWords: "allDifferent"
+  };
 
   const STORAGE_KEYS = {
     players: "impostor_players",
@@ -58,7 +69,7 @@
   let wordHistory = loadJSON(STORAGE_KEYS.wordHistory, []);
   let roundState = loadJSON(STORAGE_KEYS.roundState, null);
   let trollState = Object.assign(
-    { roundsSinceLastTroll: TROLL_COOLDOWN_ROUNDS, lastTrollType: null },
+    { roundsSinceLastTroll: TROLL_COOLDOWN_ROUNDS, lastTrollType: null, lastTrollTargetId: null },
     loadJSON(STORAGE_KEYS.trollState, {})
   );
 
@@ -182,9 +193,10 @@
     if (!settings.trollRoundsEnabled) return "classic";
     if (trollState.roundsSinceLastTroll < TROLL_COOLDOWN_ROUNDS) return "classic";
     if (secureRandomFloat() >= TROLL_ROUND_PROBABILITY) return "classic";
-    const weights = TROLL_TYPES.map((t) =>
-      t === trollState.lastTrollType ? SAME_TROLL_TYPE_REPEAT_WEIGHT : 1.0
-    );
+    const weights = TROLL_TYPES.map((t) => {
+      const base = TROLL_TYPE_BASE_WEIGHT[TROLL_TYPE_WEIGHT_KEY[t]];
+      return t === trollState.lastTrollType ? base * SAME_TROLL_TYPE_REPEAT_WEIGHT : base;
+    });
     return weightedRandomPick(TROLL_TYPES, weights);
   }
 
@@ -246,8 +258,12 @@
       starterId = players[secureRandomInt(players.length)].id;
     } else if (type === "nameWord") {
       const named = computeDisplayNames(players);
-      const target = named[secureRandomInt(named.length)];
+      let eligible = named.filter((p) => p.id !== trollState.lastTrollTargetId);
+      if (eligible.length < 2) eligible = named;
+      const target = eligible[secureRandomInt(eligible.length)];
       targetId = target.id;
+      trollState.lastTrollTargetId = targetId;
+      saveTrollState();
       word = target.displayName;
       if (secureRandomFloat() < TARGET_IS_IMPOSTOR_PROBABILITY) {
         impostorIds = [targetId];
@@ -774,14 +790,18 @@
         settings.impostorsKnowEachOther &&
         roundState.impostorIds.length > 1
       ) {
-        roundState.impostorIds
+        const otherNames = roundState.impostorIds
           .filter((id) => id !== currentId)
-          .forEach(function (id) {
-            const other = namedPlayers.find((p) => p.id === id);
-            if (other) {
-              html += '<div class="card-subtext">' + escapeHtml(other.displayName) + "</div>";
-            }
-          });
+          .map((id) => namedPlayers.find((p) => p.id === id))
+          .filter(Boolean)
+          .map((p) => p.displayName);
+        if (otherNames.length) {
+          html +=
+            '<div class="card-subtext">' +
+            (otherNames.length > 1 ? "אימפוסטרים נוספים: " : "אימפוסטר נוסף: ") +
+            escapeHtml(otherNames.join(", ")) +
+            "</div>";
+        }
       }
     } else {
       html += '<div class="card-word">' + escapeHtml(roundState.word) + "</div>";
