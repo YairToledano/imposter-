@@ -1,6 +1,6 @@
 # אימפוסטר (Impostor)
 
-[![שחקו עכשיו](https://img.shields.io/badge/▶_שחקו_עכשיו-2ea44f?style=for-the-badge)](https://yairtoledano.github.io/imposter-/)
+[![Play Now](https://img.shields.io/badge/▶_Play_Now-2ea44f?style=for-the-badge)](https://yairtoledano.github.io/imposter-/)
 
 חדש: גילוי מי היה האימפוסטר בסוף כל סבב
 
