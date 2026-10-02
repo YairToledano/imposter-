@@ -5,19 +5,26 @@
   const IMPOSTOR_START_WEIGHT = 0.5;
   const WORD_HISTORY_MAX = 40;
   const MIN_PLAYERS = 3;
-  const MIN_PLAYERS_FOR_TWO_IMPOSTORS = 5;
+  const TROLL_ROUND_PROBABILITY = 0.2;
+  const TROLL_COOLDOWN_ROUNDS = 2;
+  const SAME_TROLL_TYPE_REPEAT_WEIGHT = 0.3;
+  const TARGET_IS_IMPOSTOR_PROBABILITY = 0.85;
+
+  const TROLL_TYPES = ["everyoneImpostor", "differentWords", "nameWord"];
 
   const STORAGE_KEYS = {
     players: "impostor_players",
     settings: "impostor_settings",
     wordHistory: "impostor_wordHistory",
-    roundState: "impostor_roundState"
+    roundState: "impostor_roundState",
+    trollState: "impostor_trollState"
   };
 
   const DEFAULT_SETTINGS = {
     impostorCount: 1,
     impostorsKnowEachOther: false,
     impostorCanStart: true,
+    trollRoundsEnabled: false,
     categories: { generic: true, israeli: true }
   };
 
@@ -50,6 +57,10 @@
   if (!settings.categories) settings.categories = { generic: true, israeli: true };
   let wordHistory = loadJSON(STORAGE_KEYS.wordHistory, []);
   let roundState = loadJSON(STORAGE_KEYS.roundState, null);
+  let trollState = Object.assign(
+    { roundsSinceLastTroll: TROLL_COOLDOWN_ROUNDS, lastTrollType: null },
+    loadJSON(STORAGE_KEYS.trollState, {})
+  );
 
   function savePlayers() {
     saveJSON(STORAGE_KEYS.players, players);
@@ -63,12 +74,16 @@
   function saveRoundState() {
     saveJSON(STORAGE_KEYS.roundState, roundState);
   }
+  function saveTrollState() {
+    saveJSON(STORAGE_KEYS.trollState, trollState);
+  }
 
   // ---------- UI-only (non-persisted) state ----------
   let editingPlayerId = null;
   let settingsOpen = false;
   let startHint = "";
   let revealedCurrent = false; // resets on every fresh handoff / page load
+  let confirmingExit = false;
 
   // ---------- Secure randomness ----------
   function secureRandomUint32() {
@@ -128,10 +143,12 @@
     return order.slice(0, count).map((i) => playerList[i].id);
   }
 
-  function pickWord(categories, history) {
+  function pickWord(categories, history, exclude) {
+    exclude = exclude || [];
     let pool = [];
-    if (categories.generic) pool = pool.concat(WORDS_GENERIC);
-    if (categories.israeli) pool = pool.concat(WORDS_ISRAELI);
+    if (categories.generic) pool = pool.concat(WORDS_GENERIC_FULL);
+    if (categories.israeli) pool = pool.concat(WORDS_ISRAELI_FULL);
+    pool = pool.filter((w) => exclude.indexOf(w) === -1);
 
     let filtered = pool.filter((w) => history.indexOf(w) === -1);
     let effectiveHistory = history;
@@ -146,6 +163,31 @@
     return { word, newHistory };
   }
 
+  function pickDistinctWords(categories, history, count) {
+    const words = [];
+    let h = history;
+    for (let i = 0; i < count; i++) {
+      const r = pickWord(categories, h, words);
+      words.push(r.word);
+      h = r.newHistory;
+    }
+    return { words, newHistory: h };
+  }
+
+  function maxImpostors() {
+    return Math.max(1, Math.floor(players.length / 2));
+  }
+
+  function chooseRoundType() {
+    if (!settings.trollRoundsEnabled) return "classic";
+    if (trollState.roundsSinceLastTroll < TROLL_COOLDOWN_ROUNDS) return "classic";
+    if (secureRandomFloat() >= TROLL_ROUND_PROBABILITY) return "classic";
+    const weights = TROLL_TYPES.map((t) =>
+      t === trollState.lastTrollType ? SAME_TROLL_TYPE_REPEAT_WEIGHT : 1.0
+    );
+    return weightedRandomPick(TROLL_TYPES, weights);
+  }
+
   function pickStarter(playerList, impostorIds, impostorCanStart) {
     const weights = playerList.map((p) =>
       impostorIds.indexOf(p.id) !== -1
@@ -156,8 +198,10 @@
   }
 
   function enforceSettingsConstraints() {
-    if (settings.impostorCount === 2 && players.length < MIN_PLAYERS_FOR_TWO_IMPOSTORS) {
-      settings.impostorCount = 1;
+    const max = maxImpostors();
+    if (!(settings.impostorCount >= 1)) settings.impostorCount = 1;
+    if (settings.impostorCount > max) {
+      settings.impostorCount = max;
       saveSettings();
     }
   }
@@ -175,13 +219,57 @@
 
   function beginRound() {
     enforceSettingsConstraints();
-    const impostorIds = pickImpostors(players, settings.impostorCount);
-    const { word, newHistory } = pickWord(settings.categories, wordHistory);
-    wordHistory = newHistory;
-    saveWordHistory();
-    const starterId = pickStarter(players, impostorIds, settings.impostorCanStart);
+    const type = chooseRoundType();
+    if (type === "classic") {
+      trollState.roundsSinceLastTroll += 1;
+    } else {
+      trollState.roundsSinceLastTroll = 0;
+      trollState.lastTrollType = type;
+    }
+    saveTrollState();
+
+    let impostorIds = [];
+    let word = null;
+    let words = null;
+    let targetId = null;
+    let starterId;
+
+    if (type === "everyoneImpostor") {
+      impostorIds = players.map((p) => p.id);
+      starterId = players[secureRandomInt(players.length)].id;
+    } else if (type === "differentWords") {
+      const r = pickDistinctWords(settings.categories, wordHistory, players.length);
+      wordHistory = r.newHistory;
+      saveWordHistory();
+      words = {};
+      players.forEach((p, i) => (words[p.id] = r.words[i]));
+      starterId = players[secureRandomInt(players.length)].id;
+    } else if (type === "nameWord") {
+      const named = computeDisplayNames(players);
+      const target = named[secureRandomInt(named.length)];
+      targetId = target.id;
+      word = target.displayName;
+      if (secureRandomFloat() < TARGET_IS_IMPOSTOR_PROBABILITY) {
+        impostorIds = [targetId];
+      } else {
+        const others = players.filter((p) => p.id !== targetId);
+        impostorIds = [others[secureRandomInt(others.length)].id];
+      }
+      starterId = pickStarter(players, impostorIds, settings.impostorCanStart);
+    } else {
+      impostorIds = pickImpostors(players, settings.impostorCount);
+      const r = pickWord(settings.categories, wordHistory);
+      word = r.word;
+      wordHistory = r.newHistory;
+      saveWordHistory();
+      starterId = pickStarter(players, impostorIds, settings.impostorCanStart);
+    }
+
     roundState = {
+      type: type,
       word: word,
+      words: words,
+      targetId: targetId,
       impostorIds: impostorIds,
       starterId: starterId,
       order: players.map((p) => p.id),
@@ -190,6 +278,7 @@
     };
     saveRoundState();
     revealedCurrent = false;
+    confirmingExit = false;
     render();
   }
 
@@ -208,6 +297,7 @@
 
   function returnHome() {
     roundState = null;
+    confirmingExit = false;
     saveRoundState();
     releaseWakeLock();
     render();
@@ -290,7 +380,7 @@
     enforceSettingsConstraints();
     const named = computeDisplayNames(players);
     const canStart = players.length >= MIN_PLAYERS;
-    const twoImpostorsAllowed = players.length >= MIN_PLAYERS_FOR_TWO_IMPOSTORS;
+    const maxImp = maxImpostors();
 
     let rowsHtml = named
       .map((p, idx) => {
@@ -317,10 +407,6 @@
         );
       })
       .join("");
-
-    const impostorNote = twoImpostorsAllowed
-      ? ""
-      : '<div class="setting-note">נדרשים לפחות ' + MIN_PLAYERS_FOR_TWO_IMPOSTORS + ' שחקנים כדי לבחור שני אימפוסטרים</div>';
 
     const startDisabledAttr = canStart ? "" : "disabled";
     const hintHtml = !canStart
@@ -350,11 +436,12 @@
 
       '<div class="setting-group">' +
       '<div class="setting-label">מספר אימפוסטרים</div>' +
-      '<div class="segmented">' +
-      '<button data-action="set-impostor-count" data-value="1" class="' + (settings.impostorCount === 1 ? "active" : "") + '">1</button>' +
-      '<button data-action="set-impostor-count" data-value="2" class="' + (settings.impostorCount === 2 ? "active" : "") + '" ' + (twoImpostorsAllowed ? "" : "disabled") + ">2</button>" +
+      '<div class="stepper">' +
+      '<button data-action="impostor-minus" aria-label="פחות אימפוסטרים" ' + (settings.impostorCount <= 1 ? "disabled" : "") + ">−</button>" +
+      '<span class="stepper-value">' + settings.impostorCount + "</span>" +
+      '<button data-action="impostor-plus" aria-label="יותר אימפוסטרים" ' + (settings.impostorCount >= maxImp ? "disabled" : "") + ">+</button>" +
       "</div>" +
-      impostorNote +
+      '<div class="setting-note">עד ' + maxImp + " (חצי ממספר השחקנים)</div>" +
       "</div>" +
 
       '<div class="setting-group">' +
@@ -368,6 +455,13 @@
       '<div class="toggle-row">' +
       '<span class="toggle-text">האימפוסטר יכול להתחיל</span>' +
       '<button class="switch ' + (settings.impostorCanStart ? "on" : "") + '" data-action="toggle-can-start" aria-label="האימפוסטר יכול להתחיל"></button>' +
+      "</div>" +
+      "</div>" +
+
+      '<div class="setting-group">' +
+      '<div class="toggle-row">' +
+      '<span class="toggle-text">אפשר סבבי הטרלה</span>' +
+      '<button class="switch ' + (settings.trollRoundsEnabled ? "on" : "") + '" data-action="toggle-troll" aria-label="אפשר סבבי הטרלה"></button>' +
       "</div>" +
       "</div>" +
 
@@ -470,15 +564,26 @@
       });
     }
 
-    app.querySelectorAll('[data-action="set-impostor-count"]').forEach(function (btn) {
+    [["impostor-minus", -1], ["impostor-plus", 1]].forEach(function (pair) {
+      const btn = app.querySelector('[data-action="' + pair[0] + '"]');
+      if (!btn) return;
       btn.addEventListener("click", function () {
-        const value = parseInt(btn.getAttribute("data-value"), 10);
-        if (value === 2 && players.length < MIN_PLAYERS_FOR_TWO_IMPOSTORS) return;
-        settings.impostorCount = value;
+        const next = settings.impostorCount + pair[1];
+        if (next < 1 || next > maxImpostors()) return;
+        settings.impostorCount = next;
         saveSettings();
         render();
       });
     });
+
+    const trollBtn = app.querySelector('[data-action="toggle-troll"]');
+    if (trollBtn) {
+      trollBtn.addEventListener("click", function () {
+        settings.trollRoundsEnabled = !settings.trollRoundsEnabled;
+        saveSettings();
+        render();
+      });
+    }
 
     const knowBtn = app.querySelector('[data-action="toggle-know"]');
     if (knowBtn) {
@@ -583,6 +688,7 @@
     const nextLabel = isLast ? "סיום — מי מתחיל?" : "העבר לשחקן הבא";
 
     app.innerHTML =
+      '<button class="home-corner-btn" id="home-corner-btn" aria-label="בית">⌂ בית</button>' +
       '<div class="screen screen-center">' +
       '<div class="progress-dots">' + dotsHtml + "</div>" +
       '<div class="player-cue">תן/י את הטלפון ל<span class="player-cue-name">' +
@@ -626,22 +732,56 @@
     nextBtn.addEventListener("click", function () {
       advanceRound();
     });
+
+    el("home-corner-btn").addEventListener("click", showExitDialog);
+    if (confirmingExit) showExitDialog();
+  }
+
+  function showExitDialog() {
+    confirmingExit = true;
+    if (el("exit-dialog")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.id = "exit-dialog";
+    wrap.innerHTML =
+      '<div class="modal" role="dialog" aria-modal="true">' +
+      "<p>לצאת מהסבב הנוכחי? ההתקדמות בסבב תאבד.</p>" +
+      '<div class="modal-actions">' +
+      '<button class="btn btn-ghost" id="exit-cancel">ביטול</button>' +
+      '<button class="btn btn-primary" id="exit-confirm">אישור</button>' +
+      "</div></div>";
+    document.body.appendChild(wrap);
+    el("exit-cancel").addEventListener("click", function () {
+      confirmingExit = false;
+      wrap.remove();
+    });
+    el("exit-confirm").addEventListener("click", function () {
+      wrap.remove();
+      returnHome();
+    });
   }
 
   function populateCardBack(cardBack, currentId, namedPlayers) {
+    const type = roundState.type || "classic";
     const isImpostor = roundState.impostorIds.indexOf(currentId) !== -1;
     let html = "";
-    if (isImpostor) {
+    if (type === "differentWords") {
+      html += '<div class="card-word">' + escapeHtml(roundState.words[currentId]) + "</div>";
+    } else if (isImpostor) {
       html += '<div class="card-word">אימפוסטר</div>';
       if (
+        type === "classic" &&
         settings.impostorsKnowEachOther &&
-        roundState.impostorIds.length === 2
+        roundState.impostorIds.length > 1
       ) {
-        const otherId = roundState.impostorIds.find((id) => id !== currentId);
-        const other = namedPlayers.find((p) => p.id === otherId);
-        if (other) {
-          html += '<div class="card-subtext">' + escapeHtml(other.displayName) + "</div>";
-        }
+        roundState.impostorIds
+          .filter((id) => id !== currentId)
+          .forEach(function (id) {
+            const other = namedPlayers.find((p) => p.id === id);
+            if (other) {
+              html += '<div class="card-subtext">' + escapeHtml(other.displayName) + "</div>";
+            }
+          });
       }
     } else {
       html += '<div class="card-word">' + escapeHtml(roundState.word) + "</div>";
@@ -682,21 +822,45 @@
   // ----- Impostor reveal screen -----
   function renderImpostorReveal() {
     const namedPlayers = computeDisplayNames(players);
-    const impostors = roundState.impostorIds
-      .map((id) => namedPlayers.find((p) => p.id === id))
-      .filter(Boolean);
-    const isPlural = impostors.length >= 2;
-    const title = isPlural ? "האימפוסטרים היו:" : "האימפוסטר היה:";
+    const type = roundState.type || "classic";
+    let bodyHtml;
 
-    const namesHtml = impostors
-      .map((p) => '<div class="impostor-reveal-name">' + escapeHtml(p.displayName) + "</div>")
-      .join("");
+    if (type === "everyoneImpostor") {
+      bodyHtml =
+        "<h2>סבב הטרלה!</h2>" +
+        '<p class="impostor-reveal-note">לא היה אימפוסטר אמיתי — כולם היו "אימפוסטר".</p>';
+    } else if (type === "differentWords") {
+      bodyHtml =
+        "<h2>סבב הטרלה!</h2>" +
+        '<p class="impostor-reveal-note">כולם קיבלו מילה שונה — לא היה אימפוסטר.</p>';
+    } else {
+      const impostors = roundState.impostorIds
+        .map((id) => namedPlayers.find((p) => p.id === id))
+        .filter(Boolean);
+      const title = impostors.length >= 2 ? "האימפוסטרים היו:" : "האימפוסטר היה:";
+      const namesHtml = impostors
+        .map((p) => '<div class="impostor-reveal-name">' + escapeHtml(p.displayName) + "</div>")
+        .join("");
+      let wordHtml =
+        '<p class="impostor-reveal-word">המילה הייתה: <strong>' + escapeHtml(roundState.word) + "</strong></p>";
+      if (type === "nameWord" && roundState.impostorIds[0] !== roundState.targetId) {
+        const target = namedPlayers.find((p) => p.id === roundState.targetId);
+        wordHtml =
+          '<p class="impostor-reveal-word">השם ששימש כמילה: <strong>' +
+          escapeHtml(target ? target.displayName : roundState.word) +
+          "</strong>. האימפוסטר בפועל: <strong>" +
+          escapeHtml(impostors[0] ? impostors[0].displayName : "") +
+          "</strong></p>";
+      }
+      bodyHtml =
+        "<h2>" + title + "</h2>" +
+        '<div class="impostor-reveal-names">' + namesHtml + "</div>" +
+        wordHtml;
+    }
 
     app.innerHTML =
       '<div class="screen screen-center">' +
-      "<h2>" + title + "</h2>" +
-      '<div class="impostor-reveal-names">' + namesHtml + "</div>" +
-      '<p class="impostor-reveal-word">המילה הייתה: <strong>' + escapeHtml(roundState.word) + "</strong></p>" +
+      bodyHtml +
       '<div class="stack">' +
       '<button class="btn btn-primary btn-block" id="new-round-btn-2">סבב חדש</button>' +
       '<button class="btn btn-ghost btn-block" id="home-btn-2">חזרה למסך הבית</button>' +
